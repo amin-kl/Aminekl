@@ -67,9 +67,9 @@ log = logging.getLogger(__name__)
 #  الإعدادات — عدّلها أو ضعها في متغيرات البيئة
 # ══════════════════════════════════════════════════════════════
 CONF = {
-    "BOT_TOKEN":     os.getenv("BOT2_TOKEN",     "PUT_YOUR_BOT_TOKEN_HERE"),
-    "OWNER_ID":      int(os.getenv("BOT2_OWNER", "PUT_YOUR_CHAT_ID_HERE")),
-    "CONTAINER_URL": os.getenv("CONTAINER_URL",  ""),   # يمكن تركه فارغاً → يطلبه من المستخدم
+    "BOT_TOKEN":     os.getenv("BOT2_TOKEN",     "8901983423:AAFmGQvQCkFA4WRRCHs0bm0l6Bq9exehWS4"),
+    "OWNER_ID":      int(os.getenv("BOT2_OWNER", "8372270954")),
+    "CONTAINER_URL": os.getenv("CONTAINER_URL",  "docker.io/aminekl2007/vless:latest"),
 }
 
 # ══════════════════════════════════════════════════════════════
