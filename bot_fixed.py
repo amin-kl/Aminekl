@@ -38,120 +38,111 @@ except ImportError:
 
 
 # ==========================
-# Core Decryption - All Methods
+# خطوة 1: فك رابط DarkTunnel
 # ==========================
 
-def decrypt_aes_all_methods(encrypted_text: str) -> Optional[Dict[str, Any]]:
+def decode_darktunnel_link(link: str) -> Optional[Dict[str, Any]]:
     """
-    تجربة جميع طرق فك التشفير الممكنة حتى النجاح
+    فك رابط darktunnel:// واستخراج JSON
+    """
+    try:
+        if not link.startswith("darktunnel://"):
+            return None
+        
+        # استخراج الجزء المشفر
+        encoded = link.replace("darktunnel://", "")
+        
+        # إضافة padding لـ Base64
+        padding = len(encoded) % 4
+        if padding:
+            encoded += "=" * (4 - padding)
+        
+        # فك Base64
+        decoded = base64.urlsafe_b64decode(encoded)
+        
+        # تحويل إلى JSON
+        return json.loads(decoded.decode('utf-8'))
+        
+    except Exception as e:
+        logger.debug(f"فشل فك الرابط: {e}")
+        return None
+
+
+# ==========================
+# خطوة 2: فك التشفير (AES-256-CBC)
+# ==========================
+
+def decrypt_aes(encrypted_text: str) -> Optional[Dict[str, Any]]:
+    """
+    فك تشفير AES-256-CBC بالطريقة الصحيحة:
+    1. أول 44 حرفاً = المفتاح الجزئي
+    2. SHA256 → مفتاح 32 بايت
+    3. باقي النص = Base64(IV + ciphertext)
+    4. IV = أول 16 بايت
+    5. ciphertext = باقي البايتات
     """
     if not AES_AVAILABLE:
         return None
     
-    # تنظيف النص
-    text = encrypted_text.strip().replace('\n', '').replace('\r', '').replace(' ', '')
-    
-    if len(text) < 44:
-        return None
-    
-    # قائمة بجميع الطرق
-    methods = []
-    
-    # الطريقة 1: أول 44 حرفاً + SHA256
-    key_part = text[:44]
-    rest = text[44:]
-    if rest:
-        methods.append(('SHA256 on key part', hashlib.sha256(key_part.encode('utf-8')).digest(), rest))
-    
-    # الطريقة 2: أول 44 حرفاً مباشرة (32 بايت)
-    key_direct = key_part.encode('utf-8')[:32]
-    if len(key_direct) < 32:
-        key_direct = key_direct.ljust(32, b'\0')
-    if rest:
-        methods.append(('Direct key (first 32 bytes)', key_direct, rest))
-    
-    # الطريقة 3: أول 44 حرفاً + MD5
-    if rest:
-        methods.append(('MD5 on key part', hashlib.md5(key_part.encode('utf-8')).digest(), rest))
-    
-    # الطريقة 4: النص كاملاً + SHA256
-    methods.append(('SHA256 on full text', hashlib.sha256(text.encode('utf-8')).digest(), text))
-    
-    # الطريقة 5: النص كاملاً + MD5
-    methods.append(('MD5 on full text', hashlib.md5(text.encode('utf-8')).digest(), text))
-    
-    # الطريقة 6: Base64 فقط (بدون تقسيم)
-    methods.append(('Base64 only', None, text))
-    
-    # الطريقة 7: تجربة أطوال مختلفة للمفتاح (40, 44, 48, 52)
-    for length in [40, 44, 48, 52]:
-        if len(text) > length:
-            key_part_var = text[:length]
-            rest_var = text[length:]
-            if rest_var:
-                methods.append((f'SHA256 on {length} chars', hashlib.sha256(key_part_var.encode('utf-8')).digest(), rest_var))
-                key_direct_var = key_part_var.encode('utf-8')[:32]
-                if len(key_direct_var) < 32:
-                    key_direct_var = key_direct_var.ljust(32, b'\0')
-                methods.append((f'Direct key from {length} chars', key_direct_var, rest_var))
-    
-    # تجربة كل طريقة
-    for method_name, key, data in methods:
-        try:
-            # إذا كانت الطريقة Base64 فقط
-            if method_name == 'Base64 only':
-                for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-                    try:
-                        padding = len(data) % 4
-                        if padding:
-                            data_padded = data + "=" * (4 - padding)
-                        else:
-                            data_padded = data
-                        raw = decoder(data_padded)
-                        result = json.loads(raw.decode('utf-8'))
-                        if result:
-                            logger.info(f"✅ نجح فك التشفير باستخدام الطريقة: {method_name}")
-                            return result
-                    except Exception:
-                        continue
-                continue
-            
-            # تنظيف البيانات
-            data_clean = data.strip().replace('\n', '').replace('\r', '').replace(' ', '')
-            if not data_clean:
-                continue
-            
-            padding = len(data_clean) % 4
-            if padding:
-                data_clean += "=" * (4 - padding)
-            
-            raw = base64.b64decode(data_clean)
-            
-            if len(raw) < 16:
-                continue
-            
-            iv = raw[:16]
-            ciphertext = raw[16:]
-            
-            cipher = AES.new(key, AES.MODE_CBC, iv)
-            decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
-            result = json.loads(decrypted.decode('utf-8'))
-            
-            if result:
-                logger.info(f"✅ نجح فك التشفير باستخدام الطريقة: {method_name}")
-                return result
-                
-        except Exception as e:
-            logger.debug(f"الطريقة {method_name} فشلت: {e}")
-            continue
-    
-    return None
-
-
-def decrypt_base64_only(encrypted_text: str) -> Optional[Dict[str, Any]]:
-    """احتياطي أخير: فك Base64 فقط"""
     try:
-        text = encrypted_text.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+        if len(encrypted_text) < 44:
+            return None
+        
+        # المفتاح الجزئي (أول 44 حرفاً)
+        key_part = encrypted_text[:44]
+        
+        # باقي النص (البيانات المشفرة)
+        rest = encrypted_text[44:]
+        
+        if not rest:
+            return None
+        
+        # تنظيف النص
+        rest = rest.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+        
+        # إضافة padding لـ Base64
+        padding = len(rest) % 4
+        if padding:
+            rest += "=" * (4 - padding)
+        
+        # استخلاص المفتاح باستخدام SHA256
+        key = hashlib.sha256(key_part.encode('utf-8')).digest()
+        
+        # فك Base64
+        raw = base64.b64decode(rest)
+        
+        if len(raw) < 16:
+            return None
+        
+        # IV = أول 16 بايت
+        iv = raw[:16]
+        
+        # ciphertext = باقي البايتات
+        ciphertext = raw[16:]
+        
+        # فك التشفير
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
+        
+        # تحويل إلى JSON
+        return json.loads(decrypted.decode('utf-8'))
+        
+    except Exception as e:
+        logger.debug(f"فشل فك AES: {e}")
+        return None
+
+
+# ==========================
+# خطوة 3: فك Base64 فقط (احتياطي)
+# ==========================
+
+def decrypt_base64_only(text: str) -> Optional[Dict[str, Any]]:
+    """
+    فك Base64 فقط (احتياطي)
+    """
+    try:
+        text = text.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+        
         padding = len(text) % 4
         if padding:
             text += "=" * (4 - padding)
@@ -164,52 +155,122 @@ def decrypt_base64_only(encrypted_text: str) -> Optional[Dict[str, Any]]:
                 continue
     except Exception:
         pass
+    
     return None
 
 
-def decrypt_config(encrypted_text: str) -> Optional[Dict[str, Any]]:
-    """المحاولة الأولى: جميع طرق AES، الثانية: Base64"""
-    if not isinstance(encrypted_text, str):
-        return None
-    
-    # تجربة جميع طرق AES
-    result = decrypt_aes_all_methods(encrypted_text)
-    if result is not None:
-        return result
-    
-    # احتياطي: Base64 فقط
-    return decrypt_base64_only(encrypted_text)
+# ==========================
+# خطوة 4: المعالجة الرئيسية
+# ==========================
 
-
-def process_file(content: str) -> Optional[str]:
+def process_input(content: str) -> Optional[str]:
     """
-    معالجة الملف:
-    - إذا كان JSON يحتوي على encryptedLockedConfig → فك التشفير
-    - وإلا اعرض JSON منسقاً
+    المعالجة الرئيسية: تفكر مثل تفكيري تماماً
     """
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
+    content = content.strip()
+    if not content:
         return None
     
-    if not isinstance(data, dict):
-        return None
-    
-    # إذا كان يحتوي على encryptedLockedConfig
-    if "encryptedLockedConfig" in data:
-        encrypted = data["encryptedLockedConfig"]
-        unlocked = decrypt_config(encrypted)
-        if unlocked:
-            return json.dumps(unlocked, indent=4, ensure_ascii=False)
-        else:
-            # إذا فشل فك التشفير، نعيد JSON الأصلي مع تنبيه
+    # ===== الخطوة 1: هل هو رابط DarkTunnel؟ =====
+    if content.startswith("darktunnel://"):
+        logger.info("🔍 تم اكتشاف رابط DarkTunnel")
+        
+        # فك الرابط
+        data = decode_darktunnel_link(content)
+        if not data:
+            return json.dumps({
+                "error": "فشل فك الرابط",
+                "details": "الرابط قد يكون تالفاً"
+            }, indent=4, ensure_ascii=False)
+        
+        # هل يحتوي على encryptedLockedConfig؟
+        if "encryptedLockedConfig" in data:
+            logger.info("🔐 تم العثور على encryptedLockedConfig، جاري فك التشفير...")
+            
+            encrypted = data["encryptedLockedConfig"]
+            
+            # محاولة فك AES
+            unlocked = decrypt_aes(encrypted)
+            if unlocked:
+                logger.info("✅ تم فك التشفير بنجاح باستخدام AES")
+                return json.dumps(unlocked, indent=4, ensure_ascii=False)
+            
+            # محاولة فك Base64
+            unlocked = decrypt_base64_only(encrypted)
+            if unlocked:
+                logger.info("✅ تم فك التشفير بنجاح باستخدام Base64")
+                return json.dumps(unlocked, indent=4, ensure_ascii=False)
+            
+            # فشل فك التشفير
             return json.dumps({
                 "error": "فشل فك التشفير",
-                "original": data
+                "encrypted_preview": encrypted[:100] + "...",
+                "encrypted_length": len(encrypted),
+                "suggestion": "قد يكون التشفير يستخدم خوارزمية مختلفة"
             }, indent=4, ensure_ascii=False)
+        
+        # ليس لديه encryptedLockedConfig
+        return json.dumps(data, indent=4, ensure_ascii=False)
     
-    # إذا كان JSON عادي، أعده منسقاً
-    return json.dumps(data, indent=4, ensure_ascii=False)
+    # ===== الخطوة 2: هل هو JSON؟ =====
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict):
+            logger.info("🔍 تم اكتشاف JSON")
+            
+            # هل يحتوي على encryptedLockedConfig؟
+            if "encryptedLockedConfig" in data:
+                logger.info("🔐 تم العثور على encryptedLockedConfig، جاري فك التشفير...")
+                
+                encrypted = data["encryptedLockedConfig"]
+                
+                # محاولة فك AES
+                unlocked = decrypt_aes(encrypted)
+                if unlocked:
+                    logger.info("✅ تم فك التشفير بنجاح باستخدام AES")
+                    return json.dumps(unlocked, indent=4, ensure_ascii=False)
+                
+                # محاولة فك Base64
+                unlocked = decrypt_base64_only(encrypted)
+                if unlocked:
+                    logger.info("✅ تم فك التشفير بنجاح باستخدام Base64")
+                    return json.dumps(unlocked, indent=4, ensure_ascii=False)
+                
+                # فشل فك التشفير
+                return json.dumps({
+                    "error": "فشل فك التشفير",
+                    "encrypted_preview": encrypted[:100] + "...",
+                    "encrypted_length": len(encrypted),
+                    "suggestion": "قد يكون التشفير يستخدم خوارزمية مختلفة"
+                }, indent=4, ensure_ascii=False)
+            
+            # JSON عادي
+            return json.dumps(data, indent=4, ensure_ascii=False)
+    except json.JSONDecodeError:
+        pass
+    
+    # ===== الخطوة 3: هل هو Base64؟ =====
+    try:
+        clean = content.replace('\n', '').replace('\r', '').replace(' ', '')
+        padding = len(clean) % 4
+        if padding:
+            clean += "=" * (4 - padding)
+        
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                decoded = decoder(clean)
+                text = decoded.decode('utf-8')
+                data = json.loads(text)
+                logger.info("🔍 تم اكتشاف Base64 JSON")
+                return json.dumps(data, indent=4, ensure_ascii=False)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    
+    # ===== الخطوة 4: نص عادي =====
+    logger.info("📝 تم اكتشاف نص عادي")
+    return content
 
 
 # ==========================
@@ -218,13 +279,13 @@ def process_file(content: str) -> Optional[str]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔓 *DarkTunnel Unlocker Bot*\n\n"
-        "أرسل ملفاً يحتوي على `encryptedLockedConfig`، وسأقوم بفك تشفيره.\n\n"
-        "📌 يدعم:\n"
-        "• ملفات .dark\n"
-        "• ملفات .json\n"
-        "• ملفات .txt\n"
+        "🔓 *DarkTunnel Unlocker Bot v2.0*\n\n"
+        "أرسل لي:\n"
+        "• رابط `darktunnel://`\n"
+        "• ملف `.dark`\n"
+        "• ملف `.json`\n"
         "• أي ملف نصي\n\n"
+        "سأقوم بفك التشفير تلقائياً!\n\n"
         "📌 الأوامر:\n"
         "/start - ترحيب\n"
         "/help - المساعدة",
@@ -234,17 +295,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *كيفية الاستخدام:*\n\n"
-        "1. أرسل ملفاً نصياً\n"
-        "2. سأقرأ الملف وأبحث عن `encryptedLockedConfig`\n"
-        "3. سأفك التشفير وأعيد الملف المفكك\n\n"
-        "🔧 *طرق فك التشفير المدعومة:*\n"
-        "• AES-256-CBC (7 طرق مختلفة لاستخلاص المفتاح)\n"
-        "• Base64 (احتياطي)\n\n"
-        "سيتم تجربة جميع الطرق تلقائياً حتى النجاح.",
+        "1️⃣ أرسل رابط `darktunnel://` أو ملفاً\n"
+        "2️⃣ سأكتشف النوع تلقائياً\n"
+        "3️⃣ إذا كان مشفراً، سأفك التشفير\n"
+        "4️⃣ سأعيد النتيجة كملف JSON\n\n"
+        "🔧 *الطرق المدعومة:*\n"
+        "• رابط DarkTunnel\n"
+        "• JSON مع `encryptedLockedConfig`\n"
+        "• Base64\n"
+        "• نص عادي",
         parse_mode="Markdown"
     )
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة النصوص (الروابط)"""
+    content = update.message.text.strip()
+    if not content:
+        return
+    
+    result = process_input(content)
+    if result is None:
+        await update.message.reply_text("⚠️ لم أتمكن من معالجة هذا النص.")
+        return
+    
+    # إذا كان طويلاً، أرسله كملف
+    if len(result) > 4000:
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+                f.write(result)
+                temp_path = f.name
+            
+            with open(temp_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="unlocked_data.json",
+                    caption="✅ تم فك التشفير بنجاح!"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطأ: {e}")
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+    else:
+        await update.message.reply_text(
+            f"```\n{result}\n```",
+            parse_mode="Markdown"
+        )
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الملفات"""
     document = update.message.document
     if not document:
         return
@@ -259,12 +359,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # معالجة المحتوى
-    result = process_file(content)
-    
+    result = process_input(content)
     if result is None:
         await update.message.reply_text(
-            "⚠️ هذا الملف ليس بصيغة مدعومة.\n"
-            "تأكد من أنه يحتوي على `encryptedLockedConfig`."
+            "⚠️ لم أتمكن من معالجة هذا الملف.\n"
+            "تأكد من أنه يحتوي على بيانات صالحة."
         )
         return
     
@@ -303,12 +402,18 @@ def main():
     
     app = Application.builder().token(BOT_TOKEN).build()
     
+    # الأوامر
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    
+    # النصوص (الروابط)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    # الملفات
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    print("🤖 DarkTunnel Unlocker Bot is running...")
-    print("📌 سيتم تجربة 7 طرق مختلفة لفك التشفير.")
+    print("🤖 DarkTunnel Unlocker Bot v2.0 is running...")
+    print("📌 يدعم: روابط darktunnel://، ملفات .dark، .json، أي ملف نصي")
     app.run_polling()
 
 
