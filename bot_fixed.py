@@ -42,8 +42,9 @@ except ImportError:
 
 def try_aes_decrypt(encrypted_text: str) -> Optional[Dict[str, Any]]:
     """
-    Attempt to decrypt using AES-256-CBC with embedded key.
-    Tries multiple methods to derive the key.
+    Attempt to decrypt using AES-256-CBC.
+    Key is derived from the first 44 characters using SHA256.
+    IV is first 16 bytes after Base64 decode.
     """
     if not AES_AVAILABLE:
         return None
@@ -52,68 +53,40 @@ def try_aes_decrypt(encrypted_text: str) -> Optional[Dict[str, Any]]:
         if len(encrypted_text) < 44:
             return None
         
+        # المفتاح الجزئي هو أول 44 حرفاً
         key_part = encrypted_text[:44]
         rest = encrypted_text[44:]
         
         if not rest:
             return None
         
-        # Clean up the rest (remove whitespace, newlines)
+        # تنظيف النص
         rest = rest.strip().replace('\n', '').replace('\r', '').replace(' ', '')
         
-        # Add padding for Base64
+        # إضافة padding لـ Base64
         padding = len(rest) % 4
         if padding:
             rest += "=" * (4 - padding)
         
-        # Method 1: SHA256 on key part
-        try:
-            key = hashlib.sha256(key_part.encode('utf-8')).digest()
-            raw = base64.b64decode(rest)
-            if len(raw) >= 16:
-                iv = raw[:16]
-                ciphertext = raw[16:]
-                cipher = AES.new(key, AES.MODE_CBC, iv)
-                decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
-                result = json.loads(decrypted.decode('utf-8'))
-                if result:
-                    return result
-        except Exception as e:
-            logger.debug(f"AES Method 1 failed: {e}")
+        # استخلاص المفتاح باستخدام SHA256
+        key = hashlib.sha256(key_part.encode('utf-8')).digest()
         
-        # Method 2: Use key part directly (first 32 bytes)
-        try:
-            key = key_part.encode('utf-8')[:32]
-            if len(key) < 32:
-                key = key.ljust(32, b'\0')
-            raw = base64.b64decode(rest)
-            if len(raw) >= 16:
-                iv = raw[:16]
-                ciphertext = raw[16:]
-                cipher = AES.new(key, AES.MODE_CBC, iv)
-                decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
-                result = json.loads(decrypted.decode('utf-8'))
-                if result:
-                    return result
-        except Exception as e:
-            logger.debug(f"AES Method 2 failed: {e}")
+        # فك Base64
+        raw = base64.b64decode(rest)
         
-        # Method 3: Use SHA256 on the full encrypted text
-        try:
-            key = hashlib.sha256(encrypted_text.encode('utf-8')).digest()
-            raw = base64.b64decode(rest)
-            if len(raw) >= 16:
-                iv = raw[:16]
-                ciphertext = raw[16:]
-                cipher = AES.new(key, AES.MODE_CBC, iv)
-                decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
-                result = json.loads(decrypted.decode('utf-8'))
-                if result:
-                    return result
-        except Exception as e:
-            logger.debug(f"AES Method 3 failed: {e}")
+        if len(raw) < 16:
+            return None
         
-        return None
+        # IV = أول 16 بايت
+        iv = raw[:16]
+        ciphertext = raw[16:]
+        
+        # فك التشفير
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
+        
+        # تحويل إلى JSON
+        return json.loads(decrypted.decode('utf-8'))
         
     except Exception as e:
         logger.debug(f"AES decrypt failed: {e}")
