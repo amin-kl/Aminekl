@@ -91,20 +91,6 @@ def decrypt_locked_config(encrypted_data: str) -> Optional[Dict[str, Any]]:
     return try_base64_decrypt(encrypted_data)
 
 
-def process_locked_file(content: str) -> Optional[str]:
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict) or "encryptedLockedConfig" not in data:
-        return None
-    encrypted = data["encryptedLockedConfig"]
-    unlocked = decrypt_locked_config(encrypted)
-    if unlocked is None:
-        return None
-    return json.dumps(unlocked, indent=4, ensure_ascii=False)
-
-
 def process_darktunnel_link(link: str) -> Optional[str]:
     """Extract and decrypt from darktunnel:// link."""
     try:
@@ -116,13 +102,101 @@ def process_darktunnel_link(link: str) -> Optional[str]:
             encoded += "=" * (4 - padding)
         decoded = base64.urlsafe_b64decode(encoded)
         data = json.loads(decoded.decode('utf-8'))
+        
+        # If it has encryptedLockedConfig, decrypt it
         if "encryptedLockedConfig" in data:
             unlocked = decrypt_locked_config(data["encryptedLockedConfig"])
             if unlocked:
                 return json.dumps(unlocked, indent=4, ensure_ascii=False)
+        
+        # Otherwise return the decoded data as is
+        return json.dumps(data, indent=4, ensure_ascii=False)
+    except Exception as e:
+        logger.debug(f"DarkTunnel link processing failed: {e}")
         return None
+
+
+def process_locked_file(content: str) -> Optional[str]:
+    """Process file content: if it contains 'encryptedLockedConfig', unlock it."""
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    
+    if not isinstance(data, dict):
+        return None
+    
+    # If it has encryptedLockedConfig, decrypt it
+    if "encryptedLockedConfig" in data:
+        encrypted = data["encryptedLockedConfig"]
+        unlocked = decrypt_locked_config(encrypted)
+        if unlocked:
+            return json.dumps(unlocked, indent=4, ensure_ascii=False)
+    
+    # If it's a darktunnel link inside the file
+    if "darktunnel://" in content:
+        return process_darktunnel_link(content)
+    
+    # If it's valid JSON, return it formatted
+    return json.dumps(data, indent=4, ensure_ascii=False)
+
+
+def process_any_text(content: str) -> Optional[str]:
+    """Process any text content - tries multiple methods."""
+    content = content.strip()
+    if not content:
+        return None
+    
+    # Try 1: DarkTunnel link
+    if content.startswith("darktunnel://"):
+        result = process_darktunnel_link(content)
+        if result:
+            return result
+    
+    # Try 2: JSON with encryptedLockedConfig
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict):
+            if "encryptedLockedConfig" in data:
+                encrypted = data["encryptedLockedConfig"]
+                unlocked = decrypt_locked_config(encrypted)
+                if unlocked:
+                    return json.dumps(unlocked, indent=4, ensure_ascii=False)
+            # Valid JSON, format it
+            return json.dumps(data, indent=4, ensure_ascii=False)
+    except json.JSONDecodeError:
+        pass
+    
+    # Try 3: Base64 encoded JSON
+    try:
+        # Remove whitespace and try to decode
+        clean = content.replace('\n', '').replace('\r', '').replace(' ', '')
+        padding = len(clean) % 4
+        if padding:
+            clean += "=" * (4 - padding)
+        
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                decoded = decoder(clean)
+                text = decoded.decode('utf-8')
+                data = json.loads(text)
+                return json.dumps(data, indent=4, ensure_ascii=False)
+            except Exception:
+                continue
     except Exception:
-        return None
+        pass
+    
+    # Try 4: If it contains darktunnel:// in the middle
+    if "darktunnel://" in content:
+        for line in content.split('\n'):
+            if "darktunnel://" in line:
+                result = process_darktunnel_link(line.strip())
+                if result:
+                    return result
+    
+    # If everything fails, return the original text
+    return content
+
 
 # ==========================
 # Telegram Handlers
@@ -130,13 +204,23 @@ def process_darktunnel_link(link: str) -> Optional[str]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 أرسل ملفاً نصياً أو رابط darktunnel:// وسأحاول استخراج البيانات منه."
+        "👋 أرسل لي ملفاً نصياً أو رابطاً، وسأحاول استخراج البيانات منه.\n\n"
+        "📌 يدعم:\n"
+        "• روابط darktunnel://\n"
+        "• ملفات .dark\n"
+        "• ملفات .json\n"
+        "• ملفات .txt\n"
+        "• أي ملف نصي"
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📖 أرسل ملفاً نصياً أو رابط darktunnel://.\n"
-        "سأحاول استخراج البيانات وفك التشفير إن أمكن."
+        "📖 أرسل ملفاً نصياً أو رابط darktunnel://\n\n"
+        "سأحاول:\n"
+        "1. فك تشفير AES إذا كان مشفراً\n"
+        "2. فك Base64 إذا كان مشفراً\n"
+        "3. تنسيق JSON إذا كان صحيحاً\n"
+        "4. عرض النص كما هو"
     )
 
 
@@ -145,28 +229,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not content:
         return
     
-    # Try as darktunnel link
-    result = process_darktunnel_link(content)
+    result = process_any_text(content)
     if result:
+        # If result is very long, send as file
+        if len(result) > 4000:
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+                    f.write(result)
+                    temp_path = f.name
+                with open(temp_path, "rb") as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename="extracted_data.json",
+                        caption="✅ تم الاستخراج بنجاح!"
+                    )
+            except Exception as e:
+                await update.message.reply_text(f"❌ خطأ: {e}")
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
+        else:
+            await update.message.reply_text(
+                f"```\n{result}\n```",
+                parse_mode="Markdown"
+            )
+    else:
         await update.message.reply_text(
-            f"```\n{result}\n```",
-            parse_mode="Markdown"
+            "⚠️ لم أتمكن من استخراج بيانات من هذا النص."
         )
-        return
-    
-    # Try as locked config
-    result = process_locked_file(content)
-    if result:
-        await update.message.reply_text(
-            f"```\n{result}\n```",
-            parse_mode="Markdown"
-        )
-        return
-    
-    await update.message.reply_text(
-        "⚠️ لم أتمكن من استخراج بيانات من هذا النص.\n"
-        "تأكد من أنه رابط darktunnel:// صالح أو ملف مشفر."
-    )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -174,6 +265,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not document:
         return
 
+    # Download file
     try:
         file = await document.get_file()
         content_bytes = await file.download_as_bytearray()
@@ -181,24 +273,28 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ فشل في قراءة الملف: {e}")
         return
-
-    unlocked_json = process_locked_file(content)
-    if unlocked_json is None:
+    
+    # Process the content
+    result = process_any_text(content)
+    if not result:
         await update.message.reply_text(
-            "⚠️ هذا الملف ليس بصيغة مدعومة، أو فشل الاستخراج."
+            "⚠️ لم أتمكن من استخراج بيانات من هذا الملف."
         )
         return
-
+    
+    # Send the result
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-            f.write(unlocked_json)
+            f.write(result)
             temp_path = f.name
-
+        
         with open(temp_path, "rb") as f:
+            original_name = document.file_name or "file"
+            base_name = os.path.splitext(original_name)[0] or "extracted"
             await update.message.reply_document(
                 document=f,
-                filename="unlocked_data.json",
+                filename=f"{base_name}_extracted.json",
                 caption="✅ تم الاستخراج بنجاح!"
             )
     except Exception as e:
