@@ -41,35 +41,96 @@ except ImportError:
 # ==========================
 
 def try_aes_decrypt(encrypted_text: str) -> Optional[Dict[str, Any]]:
+    """
+    Attempt to decrypt using AES-256-CBC with embedded key.
+    Tries multiple methods to derive the key.
+    """
     if not AES_AVAILABLE:
         return None
+    
     try:
         if len(encrypted_text) < 44:
             return None
+        
         key_part = encrypted_text[:44]
         rest = encrypted_text[44:]
+        
         if not rest:
             return None
-        key = hashlib.sha256(key_part.encode('utf-8')).digest()
-        raw = base64.b64decode(rest)
-        if len(raw) < 16:
-            return None
-        iv = raw[:16]
-        ciphertext = raw[16:]
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
-        return json.loads(decrypted.decode('utf-8'))
+        
+        # Clean up the rest (remove whitespace, newlines)
+        rest = rest.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+        
+        # Add padding for Base64
+        padding = len(rest) % 4
+        if padding:
+            rest += "=" * (4 - padding)
+        
+        # Method 1: SHA256 on key part
+        try:
+            key = hashlib.sha256(key_part.encode('utf-8')).digest()
+            raw = base64.b64decode(rest)
+            if len(raw) >= 16:
+                iv = raw[:16]
+                ciphertext = raw[16:]
+                cipher = AES.new(key, AES.MODE_CBC, iv)
+                decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
+                result = json.loads(decrypted.decode('utf-8'))
+                if result:
+                    return result
+        except Exception as e:
+            logger.debug(f"AES Method 1 failed: {e}")
+        
+        # Method 2: Use key part directly (first 32 bytes)
+        try:
+            key = key_part.encode('utf-8')[:32]
+            if len(key) < 32:
+                key = key.ljust(32, b'\0')
+            raw = base64.b64decode(rest)
+            if len(raw) >= 16:
+                iv = raw[:16]
+                ciphertext = raw[16:]
+                cipher = AES.new(key, AES.MODE_CBC, iv)
+                decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
+                result = json.loads(decrypted.decode('utf-8'))
+                if result:
+                    return result
+        except Exception as e:
+            logger.debug(f"AES Method 2 failed: {e}")
+        
+        # Method 3: Use SHA256 on the full encrypted text
+        try:
+            key = hashlib.sha256(encrypted_text.encode('utf-8')).digest()
+            raw = base64.b64decode(rest)
+            if len(raw) >= 16:
+                iv = raw[:16]
+                ciphertext = raw[16:]
+                cipher = AES.new(key, AES.MODE_CBC, iv)
+                decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
+                result = json.loads(decrypted.decode('utf-8'))
+                if result:
+                    return result
+        except Exception as e:
+            logger.debug(f"AES Method 3 failed: {e}")
+        
+        return None
+        
     except Exception as e:
         logger.debug(f"AES decrypt failed: {e}")
         return None
 
 
 def try_base64_decrypt(encrypted_text: str) -> Optional[Dict[str, Any]]:
+    """
+    Fallback: treat the text as plain Base64-encoded JSON.
+    """
     try:
         encrypted_text = encrypted_text.strip()
+        encrypted_text = encrypted_text.replace('\n', '').replace('\r', '').replace(' ', '')
         padding = len(encrypted_text) % 4
         if padding:
             encrypted_text += "=" * (4 - padding)
+        
         for decoder in (base64.b64decode, base64.urlsafe_b64decode):
             try:
                 decoded_bytes = decoder(encrypted_text)
@@ -77,17 +138,25 @@ def try_base64_decrypt(encrypted_text: str) -> Optional[Dict[str, Any]]:
                 return json.loads(decoded_str)
             except Exception:
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Base64 decrypt failed: {e}")
+    
     return None
 
 
 def decrypt_locked_config(encrypted_data: str) -> Optional[Dict[str, Any]]:
+    """
+    Main decrypt function: tries AES first, then Base64.
+    """
     if not isinstance(encrypted_data, str):
         return None
+    
+    # Try AES
     result = try_aes_decrypt(encrypted_data)
     if result is not None:
         return result
+    
+    # Fallback to Base64
     return try_base64_decrypt(encrypted_data)
 
 
@@ -169,7 +238,6 @@ def process_any_text(content: str) -> Optional[str]:
     
     # Try 3: Base64 encoded JSON
     try:
-        # Remove whitespace and try to decode
         clean = content.replace('\n', '').replace('\r', '').replace(' ', '')
         padding = len(clean) % 4
         if padding:
